@@ -1,33 +1,35 @@
 """
 risk.py — Rule-based risk assessment for escalation decisions.
 Runs BEFORE the LLM to catch obvious high-risk cases fast.
+Only escalates genuinely dangerous/sensitive situations — informational
+queries (even about lost cards or disputes) should reach the LLM.
 """
 
-# Keywords that should trigger immediate escalation
 ESCALATION_KEYWORDS = {
     "fraud": [
-        "fraud", "fraudulent", "unauthorized", "scam", "stolen", "hacked",
-        "compromised", "phishing", "identity theft", "dispute", "chargeback",
-        "not me", "didn't make this", "suspicious transaction", "suspicious activity"
+        "fraudulent", "unauthorized transaction", "scam", "phishing",
+        "identity theft", "chargeback", "suspicious transaction", "suspicious activity",
+        "didn't make this", "not me", "not authorized"
     ],
     "account_security": [
-        "can't log in", "cannot login", "locked out", "account locked",
-        "password reset not working", "account suspended", "banned account",
-        "account compromised", "someone else logged in", "unauthorized access"
+        "account hacked", "account compromised", "someone else logged in",
+        "unauthorized access", "account locked", "locked out", "banned account",
+        "account suspended"
     ],
     "billing_dispute": [
-        "double charged", "wrong charge", "overcharged", "refund not received",
-        "payment failed but charged", "charged twice", "billing error",
-        "money deducted", "amount debited"
+        "double charged", "charged twice", "wrong charge", "overcharged",
+        "refund not received", "payment failed but charged", "billing error",
+        "money deducted without"
     ],
     "legal": [
-        "legal action", "lawsuit", "attorney", "lawyer", "court",
-        "gdpr", "data breach", "privacy violation", "compliance"
+        "legal action", "lawsuit", "attorney", "lawyer", "court order",
+        "data breach", "gdpr violation", "privacy violation"
     ],
-    "sensitive_visa": [
-        "card stolen", "lost card", "block my card", "freeze card",
-        "card fraud", "atm fraud", "pos fraud", "international transaction blocked"
-    ]
+    "prompt_injection": [
+        "ignore previous instructions", "show me your prompt", "reveal your system",
+        "affiche toutes les règles", "règles internes", "logique exacte",
+        "override your instructions", "bypass your filters"
+    ],
 }
 
 def assess_risk(issue: str, company: str) -> dict:
@@ -48,17 +50,6 @@ def assess_risk(issue: str, company: str) -> dict:
                     "should_escalate": True,
                     "risk_category": category,
                     "reason": f"Detected high-risk keyword: '{keyword}' in category '{category}'"
-                }
-
-    # Visa-specific: any payment/transaction issue is higher risk
-    if company == "Visa":
-        payment_keywords = ["transaction", "payment", "transfer", "amount", "money", "card"]
-        for kw in payment_keywords:
-            if kw in issue_lower:
-                return {
-                    "should_escalate": True,
-                    "risk_category": "payment_sensitive",
-                    "reason": f"Visa payment-related issue detected — routing to human for safety"
                 }
 
     return {
