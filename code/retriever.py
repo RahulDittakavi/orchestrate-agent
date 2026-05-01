@@ -15,11 +15,15 @@ class Retriever:
         embed_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
             model_name=EMBED_MODEL
         )
-        self.collection = self.client.get_collection(
-            name="support_corpus",
-            embedding_function=embed_fn
-        )
-        print("[✓] Retriever initialized")
+        try:
+            self.collection = self.client.get_collection(
+                name="support_corpus",
+                embedding_function=embed_fn
+            )
+            print("[✓] Retriever initialized")
+        except Exception:
+            self.collection = None
+            print("[!] ChromaDB collection 'support_corpus' not found — run corpus_builder.py first. RAG disabled.")
 
     def retrieve(self, query: str, company: str = None, top_k: int = 5) -> list[dict]:
         """
@@ -33,6 +37,9 @@ class Retriever:
             "Claude": "claude",
             "Visa": "visa"
         }
+
+        if self.collection is None:
+            return []
 
         where_filter = None
         if company and company in source_map:

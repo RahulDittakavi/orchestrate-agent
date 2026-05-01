@@ -4,10 +4,13 @@ pipeline.py — Core triage pipeline. Orchestrates all components.
 
 import json
 import re
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from prompts import TRIAGE_PROMPT, DOMAIN_CLASSIFIER_PROMPT
 from retriever import Retriever
 from risk import assess_risk
+
+GEMINI_MODEL = "gemini-2.5-flash"
 
 # Fallback escalation response template
 ESCALATION_RESPONSE = (
@@ -24,22 +27,23 @@ OUT_OF_SCOPE_RESPONSE = (
 
 class TriagePipeline:
     def __init__(self, gemini_api_key: str):
-        genai.configure(api_key=gemini_api_key)
-        self.model = genai.GenerativeModel("gemini-1.5-pro")
+        self.client = genai.Client(api_key=gemini_api_key)
         self.retriever = Retriever()
-        print("[✓] Pipeline initialized")
+        print(f"[✓] Pipeline initialized (model: {GEMINI_MODEL})")
 
     def _call_gemini(self, prompt: str) -> str:
         """Call Gemini with retry on failure."""
         try:
-            response = self.model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.1,          # Low temp = consistent, factual output
+            response = self.client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
                     max_output_tokens=1024,
-                )
+                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                ),
             )
-            return response.text.strip()
+            return (response.text or "").strip() or None
         except Exception as e:
             print(f"  [!] Gemini API error: {e}")
             return None
@@ -49,11 +53,9 @@ class TriagePipeline:
         if not text:
             return None
         try:
-            # Strip markdown code fences if present
             clean = re.sub(r"```json|```", "", text).strip()
             return json.loads(clean)
         except json.JSONDecodeError:
-            # Try to extract JSON block from response
             match = re.search(r"\{.*\}", text, re.DOTALL)
             if match:
                 try:
@@ -74,7 +76,6 @@ class TriagePipeline:
         )
         result = self._call_gemini(prompt)
         if result:
-            result = result.strip()
             for c in ["HackerRank", "Claude", "Visa"]:
                 if c.lower() in result.lower():
                     return c
@@ -102,7 +103,6 @@ class TriagePipeline:
         subject = str(subject).strip() if subject else ""
         company = str(company).strip() if company else ""
 
-        # Handle empty/garbage input
         if len(issue) < 5:
             return self._make_fallback_result(
                 "escalated",
@@ -142,17 +142,27 @@ class TriagePipeline:
         parsed = self._parse_json_response(raw_response)
 
         if not parsed:
-            # LLM failed — safe fallback
             return self._make_fallback_result(
                 "escalated",
                 "LLM response could not be parsed — escalating for safety."
             )
 
         # ── Step 6: Validate and return ────────────────────────────────────
+        valid_statuses = {"replied", "escalated"}
+        valid_request_types = {"product_issue", "feature_request", "bug", "invalid"}
+
+        status = parsed.get("status", "escalated")
+        if status not in valid_statuses:
+            status = "escalated"
+
+        request_type = parsed.get("request_type", "product_issue")
+        if request_type not in valid_request_types:
+            request_type = "product_issue"
+
         return {
-            "status": parsed.get("status", "escalated"),
+            "status": status,
             "product_area": parsed.get("product_area", resolved_company.lower()),
-            "request_type": parsed.get("request_type", "product_issue"),
+            "request_type": request_type,
             "response": parsed.get("response", ESCALATION_RESPONSE),
             "justification": parsed.get("justification", "See agent reasoning.")
         }

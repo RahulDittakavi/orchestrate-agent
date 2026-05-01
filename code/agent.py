@@ -31,22 +31,27 @@ console = Console()
 # ── Paths ───────────────────────────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "..", "data")
-INPUT_CSV = os.path.join(DATA_DIR, "support_issues", "support_issues.csv")
-OUTPUT_CSV = os.path.join(BASE_DIR, "..", "output.csv")
+DEFAULT_INPUT_CSV = os.path.join(DATA_DIR, "support_issues", "support_issues.csv")
+DEFAULT_OUTPUT_CSV = os.path.join(BASE_DIR, "..", "output.csv")
 
 # Required output columns
 OUTPUT_COLUMNS = ["status", "product_area", "response", "justification", "request_type"]
 
-def process_csv(pipeline: TriagePipeline, logger):
-    """Read support_issues.csv, run pipeline on each row, write output.csv."""
+def process_csv(pipeline: TriagePipeline, logger, input_csv: str, output_csv: str, limit: int = None):
+    """Read input CSV, run pipeline on each row, write output CSV."""
 
-    if not os.path.exists(INPUT_CSV):
-        console.print(f"[red]Error: Input CSV not found at {INPUT_CSV}[/red]")
-        console.print("Make sure support_issues.csv is at: data/support_issues/support_issues.csv")
+    if not os.path.exists(input_csv):
+        console.print(f"[red]Error: Input CSV not found at {input_csv}[/red]")
         sys.exit(1)
 
-    df = pd.read_csv(INPUT_CSV)
-    console.print(f"\n[green]Loaded {len(df)} tickets from {INPUT_CSV}[/green]")
+    df = pd.read_csv(input_csv)
+    # Normalize column names: lowercase + replace spaces with underscores
+    df.columns = [c.lower().replace(" ", "_") for c in df.columns]
+
+    if limit:
+        df = df.head(limit)
+
+    console.print(f"\n[green]Loaded {len(df)} tickets from {input_csv}[/green]")
 
     results = []
 
@@ -73,11 +78,12 @@ def process_csv(pipeline: TriagePipeline, logger):
     # Build output dataframe
     output_df = pd.DataFrame(results)[OUTPUT_COLUMNS]
 
-    # Merge with input if needed (keep original columns + add output)
-    full_output = pd.concat([df.reset_index(drop=True), output_df], axis=1)
-    full_output.to_csv(OUTPUT_CSV, index=False)
+    # Drop any input columns that clash with output columns before merging
+    input_df = df.drop(columns=[c for c in OUTPUT_COLUMNS if c in df.columns], errors="ignore")
+    full_output = pd.concat([input_df.reset_index(drop=True), output_df], axis=1)
+    full_output.to_csv(output_csv, index=False)
 
-    console.print(f"\n[bold green]✓ Output saved to: {OUTPUT_CSV}[/bold green]")
+    console.print(f"\n[bold green]✓ Output saved to: {output_csv}[/bold green]")
     _print_summary(output_df)
 
 def _print_summary(df: pd.DataFrame):
@@ -128,6 +134,7 @@ def interactive_mode(pipeline: TriagePipeline, logger):
         log_ticket(logger, idx, issue, subject, company, result)
         idx += 1
 
+
         # Display result
         console.print(f"\n[bold]Status:[/bold] {'[green]' if result['status'] == 'replied' else '[yellow]'}{result['status'].upper()}[/]")
         console.print(f"[bold]Product Area:[/bold] {result['product_area']}")
@@ -138,6 +145,9 @@ def interactive_mode(pipeline: TriagePipeline, logger):
 def main():
     parser = argparse.ArgumentParser(description="Support Triage Agent")
     parser.add_argument("--interactive", action="store_true", help="Run in interactive terminal mode")
+    parser.add_argument("--input", default=None, help="Path to input CSV (default: data/support_issues/support_issues.csv)")
+    parser.add_argument("--output", default=None, help="Path to output CSV (default: output.csv at repo root)")
+    parser.add_argument("--limit", type=int, default=None, help="Process only the first N rows")
     args = parser.parse_args()
 
     # Load API key
@@ -146,6 +156,9 @@ def main():
         console.print("[red]Error: GEMINI_API_KEY not set in .env file[/red]")
         sys.exit(1)
 
+    input_csv = args.input or DEFAULT_INPUT_CSV
+    output_csv = args.output or DEFAULT_OUTPUT_CSV
+
     console.print("[bold]Initializing Support Triage Agent...[/bold]")
     logger = setup_logger()
     pipeline = TriagePipeline(gemini_api_key)
@@ -153,7 +166,7 @@ def main():
     if args.interactive:
         interactive_mode(pipeline, logger)
     else:
-        process_csv(pipeline, logger)
+        process_csv(pipeline, logger, input_csv, output_csv, args.limit)
 
 if __name__ == "__main__":
     main()
