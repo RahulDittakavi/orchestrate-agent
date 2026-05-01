@@ -4,6 +4,7 @@ pipeline.py — Core triage pipeline. Orchestrates all components.
 
 import json
 import re
+import time
 from google import genai
 from google.genai import types
 from prompts import TRIAGE_PROMPT, DOMAIN_CLASSIFIER_PROMPT
@@ -31,22 +32,37 @@ class TriagePipeline:
         self.retriever = Retriever()
         print(f"[✓] Pipeline initialized (model: {GEMINI_MODEL})")
 
-    def _call_gemini(self, prompt: str) -> str:
-        """Call Gemini with retry on failure."""
-        try:
-            response = self.client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.1,
-                    max_output_tokens=1024,
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
-                ),
-            )
-            return (response.text or "").strip() or None
-        except Exception as e:
-            print(f"  [!] Gemini API error: {e}")
-            return None
+    # Seconds to sleep after every successful Gemini call to stay under free-tier RPM limit.
+    # Free tier = 5 req/min → 1 call per 12s minimum; 13s gives a safe buffer.
+    _RATE_LIMIT_SLEEP = 13
+
+    def _call_gemini(self, prompt: str, max_retries: int = 3) -> str:
+        """Call Gemini. Sleeps after each call to respect free-tier rate limits."""
+        for attempt in range(max_retries):
+            try:
+                response = self.client.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=0.1,
+                        max_output_tokens=1024,
+                        thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    ),
+                )
+                time.sleep(self._RATE_LIMIT_SLEEP)
+                return (response.text or "").strip() or None
+            except Exception as e:
+                msg = str(e)
+                if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+                    delay_match = re.search(r'"retryDelay"\s*:\s*"(\d+)s"', msg)
+                    wait = int(delay_match.group(1)) + 5 if delay_match else 30
+                    print(f"  [!] Rate limited. Waiting {wait}s (attempt {attempt + 1}/{max_retries})...")
+                    time.sleep(wait)
+                else:
+                    print(f"  [!] Gemini API error: {e}")
+                    return None
+        print("  [!] Max retries exceeded — escalating.")
+        return None
 
     def _parse_json_response(self, text: str) -> dict | None:
         """Safely parse JSON from LLM response."""
